@@ -201,7 +201,9 @@ jobs:
         run: |
           $exe = 'citric/Citric Composer/Citric Composer/bin/Release/Citric Composer.exe'
           if (-not (Test-Path $exe)) { throw "Build output not found: $exe" }
-          & $exe --replace-music 'template.bfsar' 'Music_32000_stereo_s16.wav' '1' '302' 'custom_cafe_barista_men.bfsar'
+          $process = Start-Process -FilePath $exe -ArgumentList @('--replace-music', 'template.bfsar', 'Music_32000_stereo_s16.wav', '1', '302', 'custom_cafe_barista_men.bfsar') -WorkingDirectory (Get-Location).Path -Wait -PassThru
+          Write-Host "Citric Composer process exit code: $($process.ExitCode)"
+          if ($process.ExitCode -ne 0) { throw "Citric Composer exited with code $($process.ExitCode)." }
           if (-not (Test-Path -Path 'custom_cafe_barista_men.bfsar')) { throw "Citric Composer did not create the rebuilt BFSAR." }
           if ((Get-Item 'custom_cafe_barista_men.bfsar').Length -lt 1000000) { throw "The rebuilt BFSAR is unexpectedly small." }
           Write-Host "Verified rebuilt BFSAR exists: $((Get-Item 'custom_cafe_barista_men.bfsar').Length) bytes"
