@@ -171,6 +171,8 @@ jobs:
           if (-not $source.Contains($marker)) { throw 'Could not locate Program.cs insertion point.' }
           $source = $source.Replace($marker, $insert + $marker)
           [System.IO.File]::WriteAllText($programPath, $source, [System.Text.UTF8Encoding]::new($false))
+      - name: Set up MSBuild
+        uses: microsoft/setup-msbuild@v2
       - name: Build Citric Composer
         shell: pwsh
         run: |
