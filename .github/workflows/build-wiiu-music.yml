@@ -176,7 +176,7 @@ jobs:
       - name: Build Citric Composer
         shell: pwsh
         run: |
-          msbuild 'citric/Citric Composer/Citric Composer.sln' /m /p:Configuration=Release '/p:Platform=Any CPU'
+          msbuild 'citric/Citric Composer/Citric Composer/Citric Composer.csproj' /m /p:Configuration=Release /p:Platform=AnyCPU
           if ($LASTEXITCODE -ne 0) { throw "MSBuild failed with exit code $LASTEXITCODE" }
       - name: Replace wave 302 and rebuild the BFSAR
         shell: pwsh
