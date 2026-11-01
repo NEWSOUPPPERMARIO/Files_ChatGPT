@@ -96,8 +96,26 @@ jobs:
           Path("template.bfsar").write_bytes(templ)
           '@ | Set-Content -Path 'prepare.py' -Encoding utf8
           python prepare.py
-          ffmpeg -hide_banner -loglevel error -y -i Music.mp3 -ar 32000 -ac 2 -c:a pcm_s16le -map_metadata -1 Music_32000_stereo_s16.wav
-          python -c "import wave; w=wave.open('Music_32000_stereo_s16.wav'); assert (w.getframerate(),w.getnchannels(),w.getsampwidth())==(32000,2,2); print('WAV:',w.getframerate(),'Hz,',w.getnchannels(),'channels,',w.getsampwidth()*8,'bit,',w.getnframes(),'frames')"
+          ffmpeg -hide_banner -loglevel error -y -i Music.mp3 -ar 32000 -ac 2 -c:a pcm_s16le -map_metadata -1 Music_32000_stereo_s16_raw.wav
+          @'
+          import wave
+          raw = "Music_32000_stereo_s16_raw.wav"
+          clean = "Music_32000_stereo_s16.wav"
+          with wave.open(raw, "rb") as src:
+              params = src.getparams()
+              assert (params.framerate, params.nchannels, params.sampwidth) == (32000, 2, 2)
+              frames = src.readframes(src.getnframes())
+          with wave.open(clean, "wb") as dst:
+              dst.setparams(params)
+              dst.writeframes(frames)
+          data = open(clean, "rb").read()
+          assert data[:4] == b"RIFF" and data[8:12] == b"WAVE"
+          assert data[12:16] == b"fmt " and data[36:40] == b"data"
+          assert len(data) == int.from_bytes(data[4:8], "little") + 8
+          with wave.open(clean, "rb") as w:
+              print("WAV:", w.getframerate(), "Hz,", w.getnchannels(), "channels,", w.getsampwidth()*8, "bit,", w.getnframes(), "frames; minimal fmt+data chunks")
+          '@ | Set-Content -Path 'clean_wav.py' -Encoding utf8
+          python clean_wav.py
       - name: Restore dependencies and prepare binary-data reference
         shell: pwsh
         run: |
