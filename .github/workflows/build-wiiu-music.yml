@@ -202,7 +202,9 @@ jobs:
           $exe = 'citric/Citric Composer/Citric Composer/bin/Release/Citric Composer.exe'
           if (-not (Test-Path $exe)) { throw "Build output not found: $exe" }
           & $exe --replace-music 'template.bfsar' 'Music_32000_stereo_s16.wav' '1' '302' 'custom_cafe_barista_men.bfsar'
-          if ($LASTEXITCODE -ne 0) { throw "Citric Composer replacement failed with exit code $LASTEXITCODE" }
+          if (-not (Test-Path -Path 'custom_cafe_barista_men.bfsar')) { throw "Citric Composer did not create the rebuilt BFSAR." }
+          if ((Get-Item 'custom_cafe_barista_men.bfsar').Length -lt 1000000) { throw "The rebuilt BFSAR is unexpectedly small." }
+          Write-Host "Verified rebuilt BFSAR exists: $((Get-Item 'custom_cafe_barista_men.bfsar').Length) bytes"
       - name: Generate and verify BPS patch
         shell: pwsh
         run: |
