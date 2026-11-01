@@ -1,0 +1,25 @@
+name: Export Theme Cafe music template
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/export-music-template.yml
+permissions:
+  contents: read
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download official music templates
+        run: |
+          mkdir -p templates
+          curl -fL 'https://raw.githubusercontent.com/ThemeCafe/Docs/main/docs/themecreation/music/templates/cafe_barista_men%20%28MII%20SFX%29.bps' -o 'templates/cafe_barista_men_MII_SFX.bps'
+          curl -fL 'https://raw.githubusercontent.com/ThemeCafe/Docs/main/docs/themecreation/music/templates/cafe_barista_men%20%28NO%20MII%20SFX%29.bps' -o 'templates/cafe_barista_men_NO_MII_SFX.bps'
+          test -s 'templates/cafe_barista_men_MII_SFX.bps'
+          test -s 'templates/cafe_barista_men_NO_MII_SFX.bps'
+      - name: Upload templates
+        uses: actions/upload-artifact@v4
+        with:
+          name: theme-cafe-music-templates
+          path: templates/*.bps
+          retention-days: 1
