@@ -1,0 +1,268 @@
+name: Build Wii U menu music patch
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/build-wiiu-music.yml
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Check out user files
+        uses: actions/checkout@v4
+      - name: Check out Citric Composer
+        uses: actions/checkout@v4
+        with:
+          repository: Gota7/Citric-Composer
+          ref: master
+          path: citric
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Prepare files and apply Theme Cafe template
+        shell: pwsh
+        run: |
+          if (-not (Get-Command ffmpeg -ErrorAction SilentlyContinue)) {
+            choco install ffmpeg --yes --no-progress
+          }
+          Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/ThemeCafe/Docs/main/docs/themecreation/music/templates/cafe_barista_men%20%28MII%20SFX%29.bps' -OutFile 'theme-template.bps'
+          @'
+          import struct, zipfile, zlib
+          from pathlib import Path
+
+          with zipfile.ZipFile("BURH.zip") as z:
+              names = set(z.namelist())
+              assert "Music.mp3" in names and "cafe_barista_men.bfsar" in names, names
+              z.extract("Music.mp3", ".")
+              z.extract("cafe_barista_men.bfsar", ".")
+
+          def dec(data, pos):
+              value = 0
+              shift = 1
+              while True:
+                  x = data[pos]
+                  pos += 1
+                  value += (x & 0x7f) * shift
+                  if x & 0x80:
+                      return value, pos
+                  shift <<= 7
+                  value += shift
+
+          def apply_bps(src, patch):
+              assert patch[:4] == b"BPS1"
+              src_size, pos = dec(patch, 4)
+              target_size, pos = dec(patch, pos)
+              meta_size, pos = dec(patch, pos)
+              pos += meta_size
+              assert src_size == len(src)
+              end = len(patch) - 12
+              out = bytearray()
+              source_rel = 0
+              target_rel = 0
+              while pos < end:
+                  cmd, pos = dec(patch, pos)
+                  kind = cmd & 3
+                  length = (cmd >> 2) + 1
+                  if kind == 0:
+                      start = len(out)
+                      out.extend(src[start:start+length])
+                  elif kind == 1:
+                      out.extend(patch[pos:pos+length])
+                      pos += length
+                  elif kind == 2:
+                      delta, pos = dec(patch, pos)
+                      source_rel += -(delta >> 1) if delta & 1 else (delta >> 1)
+                      out.extend(src[source_rel:source_rel+length])
+                      source_rel += length
+                  else:
+                      delta, pos = dec(patch, pos)
+                      target_rel += -(delta >> 1) if delta & 1 else (delta >> 1)
+                      for _ in range(length):
+                          out.append(out[target_rel])
+                          target_rel += 1
+              s_crc, t_crc, p_crc = struct.unpack("<III", patch[-12:])
+              assert zlib.crc32(src) & 0xffffffff == s_crc
+              assert zlib.crc32(out) & 0xffffffff == t_crc
+              assert zlib.crc32(patch[:-4]) & 0xffffffff == p_crc
+              assert len(out) == target_size
+              return bytes(out)
+
+          source = Path("cafe_barista_men.bfsar").read_bytes()
+          templ = apply_bps(source, Path("theme-template.bps").read_bytes())
+          assert templ[:4] == b"FSAR"
+          Path("template.bfsar").write_bytes(templ)
+          '@ | Set-Content -Path 'prepare.py' -Encoding utf8
+          python prepare.py
+          ffmpeg -hide_banner -loglevel error -y -i Music.mp3 -ar 32000 -ac 2 -c:a pcm_s16le -map_metadata -1 Music_32000_stereo_s16.wav
+          python -c "import wave; w=wave.open('Music_32000_stereo_s16.wav'); assert (w.getframerate(),w.getnchannels(),w.getsampwidth())==(32000,2,2); print('WAV:',w.getframerate(),'Hz,',w.getnchannels(),'channels,',w.getsampwidth()*8,'bit,',w.getnframes(),'frames')"
+      - name: Restore dependencies and prepare binary-data reference
+        shell: pwsh
+        run: |
+          $sourceDll = 'citric/Citric Composer/SolarFileLoader/bin/Debug/Syroot.BinaryData.dll'
+          if (-not (Test-Path $sourceDll)) { throw "Missing Syroot.BinaryData.dll at $sourceDll" }
+          $expectedDir = 'citric/NitroStudio/NitroStudio'
+          New-Item -ItemType Directory -Force -Path $expectedDir | Out-Null
+          Copy-Item $sourceDll (Join-Path $expectedDir 'Syroot.BinaryData.dll') -Force
+          nuget restore 'citric/Citric Composer/Citric Composer.sln'
+      - name: Add a non-GUI music replacement command
+        shell: pwsh
+        run: |
+          $programPath = 'citric/Citric Composer/Citric Composer/Program.cs'
+          $source = Get-Content -Raw $programPath
+          $marker = '            //Application set up.'
+          $insert = @'
+                      if (args.Length == 6 && args[0] == "--replace-music") {
+                          try {
+                              string inputPath = args[1];
+                              string wavPath = args[2];
+                              int warIndex = Int32.Parse(args[3]);
+                              int waveIndex = Int32.Parse(args[4]);
+                              string outputPath = args[5];
+
+                              SoundArchive archive = SoundArchiveReader.ReadSoundArchive(inputPath);
+                              WaveArchiveEntry entry = archive.WaveArchives[warIndex];
+                              if (entry == null || entry.File == null || entry.File.File == null)
+                                  throw new InvalidOperationException("The requested wave archive did not load.");
+                              SoundWaveArchive war = (SoundWaveArchive)entry.File.File;
+                              Wave oldWave = war[waveIndex];
+                              if (oldWave == null || oldWave.Wav == null)
+                                  throw new InvalidOperationException("The target wave is null.");
+
+                              RiffWave riff = new RiffWave();
+                              riff.Load(System.IO.File.ReadAllBytes(wavPath));
+                              if (riff.fmt.sampleRate != 32000 || riff.fmt.numChannels != 2 || riff.fmt.bitsPerSample != 16)
+                                  throw new InvalidOperationException("Input WAV is not 32 kHz stereo PCM16.");
+
+                              b_wav replacement = WaveFactory.CreateWave(
+                                  riff, true,
+                                  oldWave.Wav.fileHeader.vMajor,
+                                  oldWave.Wav.fileHeader.vMinor,
+                                  oldWave.Wav.fileHeader.vRevision);
+                              war[waveIndex] = new Wave() { Name = oldWave.Name, Wav = replacement };
+
+                              SoundArchiveWriter.WriteSoundArchive(
+                                  archive,
+                                  System.IO.Path.GetDirectoryName(outputPath),
+                                  outputPath);
+
+                              SoundArchive check = SoundArchiveReader.ReadSoundArchive(outputPath);
+                              SoundWaveArchive checkWar = (SoundWaveArchive)check.WaveArchives[warIndex].File.File;
+                              b_wav checkWave = checkWar[waveIndex].Wav;
+                              int channels = checkWave.info.channelInfo.Count;
+                              if (checkWave.info.sampleRate != 32000 || channels != 2 || checkWave.info.encoding != EncodingTypes.DSP_ADPCM)
+                                  throw new InvalidOperationException("Saved wave failed format validation.");
+                              Console.WriteLine("Rebuilt and re-opened BFSAR successfully.");
+                              Console.WriteLine("Wave archive index: " + warIndex + "; wave index: " + waveIndex);
+                              Console.WriteLine("Encoding: DSP ADPCM; sample rate: " + checkWave.info.sampleRate + "; channels: " + channels);
+                              Console.WriteLine("Frames: " + checkWave.info.loopEnd + "; output bytes: " + new System.IO.FileInfo(outputPath).Length);
+                              return;
+                          }
+                          catch (Exception ex) {
+                              Console.Error.WriteLine(ex.ToString());
+                              Environment.ExitCode = 1;
+                              return;
+                          }
+                      }
+
+          '@
+          if (-not $source.Contains($marker)) { throw 'Could not locate Program.cs insertion point.' }
+          $source = $source.Replace($marker, $insert + $marker)
+          [System.IO.File]::WriteAllText($programPath, $source, [System.Text.UTF8Encoding]::new($false))
+      - name: Build Citric Composer
+        shell: pwsh
+        run: |
+          msbuild 'citric/Citric Composer/Citric Composer.sln' /m /p:Configuration=Release '/p:Platform=Any CPU'
+          if ($LASTEXITCODE -ne 0) { throw "MSBuild failed with exit code $LASTEXITCODE" }
+      - name: Replace wave 302 and rebuild the BFSAR
+        shell: pwsh
+        run: |
+          $exe = 'citric/Citric Composer/Citric Composer/bin/Release/Citric Composer.exe'
+          if (-not (Test-Path $exe)) { throw "Build output not found: $exe" }
+          & $exe --replace-music 'template.bfsar' 'Music_32000_stereo_s16.wav' '1' '302' 'custom_cafe_barista_men.bfsar'
+          if ($LASTEXITCODE -ne 0) { throw "Citric Composer replacement failed with exit code $LASTEXITCODE" }
+      - name: Generate and verify BPS patch
+        shell: pwsh
+        run: |
+          @'
+          import struct, zlib
+          from pathlib import Path
+
+          def enc(value):
+              out = bytearray()
+              while True:
+                  x = value & 0x7f
+                  value >>= 7
+                  if value == 0:
+                      out.append(x | 0x80)
+                      return bytes(out)
+                  out.append(x)
+                  value -= 1
+
+          def decode(data, pos):
+              value, shift = 0, 1
+              while True:
+                  x = data[pos]; pos += 1
+                  value += (x & 0x7f) * shift
+                  if x & 0x80:
+                      return value, pos
+                  shift <<= 7
+                  value += shift
+
+          def apply_bps(src, patch):
+              assert patch[:4] == b"BPS1"
+              src_size, p = decode(patch,4)
+              tgt_size, p = decode(patch,p)
+              meta_size, p = decode(patch,p)
+              p += meta_size
+              assert src_size == len(src)
+              end = len(patch)-12
+              out=bytearray()
+              while p < end:
+                  cmd,p=decode(patch,p)
+                  kind=cmd&3
+                  length=(cmd>>2)+1
+                  if kind==0:
+                      start=len(out);out.extend(src[start:start+length])
+                  elif kind==1:
+                      out.extend(patch[p:p+length]);p+=length
+                  else:
+                      raise AssertionError("Expected single TargetRead action")
+              a,b,c=struct.unpack("<III",patch[-12:])
+              assert zlib.crc32(src)&0xffffffff==a
+              assert zlib.crc32(out)&0xffffffff==b
+              assert zlib.crc32(patch[:-4])&0xffffffff==c
+              assert len(out)==tgt_size
+              return bytes(out)
+
+          source=Path("cafe_barista_men.bfsar").read_bytes()
+          target=Path("custom_cafe_barista_men.bfsar").read_bytes()
+          assert source[:4]==target[:4]==b"FSAR"
+          patch=b"BPS1"+enc(len(source))+enc(len(target))+enc(0)
+          patch+=enc(((len(target)-1)<<2)|1)+target
+          patch+=struct.pack("<II",zlib.crc32(source)&0xffffffff,zlib.crc32(target)&0xffffffff)
+          patch+=struct.pack("<I",zlib.crc32(patch)&0xffffffff)
+          Path("custom_cafe_barista_men.bps").write_bytes(patch)
+          rebuilt=apply_bps(source,patch)
+          assert rebuilt==target
+          Path("verification.txt").write_text(
+              f"Source BFSAR bytes: {len(source)}\nTarget BFSAR bytes: {len(target)}\n"
+              f"BPS bytes: {len(patch)}\nSource CRC32: {zlib.crc32(source)&0xffffffff:08X}\n"
+              f"Target CRC32: {zlib.crc32(target)&0xffffffff:08X}\n"
+              "BPS apply round-trip: PASS\nArchive magic: FSAR\n"
+          )
+          print(Path("verification.txt").read_text())
+          '@ | Set-Content -Path 'make_bps.py' -Encoding utf8
+          python make_bps.py
+      - name: Upload finished files
+        uses: actions/upload-artifact@v4
+        with:
+          name: WiiU-Menu-Music-Patch
+          path: |
+            custom_cafe_barista_men.bfsar
+            custom_cafe_barista_men.bps
+            Music_32000_stereo_s16.wav
+            verification.txt
+          retention-days: 1
