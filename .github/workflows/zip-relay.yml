@@ -1,0 +1,16 @@
+name: ZIP artifact relay
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  relay:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/upload-artifact@v4
+        with:
+          name: speed-packs-wiiu
+          path: speed_packs_wiiu.zip
+          if-no-files-found: error
+          retention-days: 1
